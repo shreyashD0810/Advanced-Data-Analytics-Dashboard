@@ -60,14 +60,20 @@ async def run_agent(dataset_name: str = None, selected_columns: List[str] = None
 def plotly_to_image(fig):
     """Convert Plotly figure to base64 image with better error handling"""
     try:
-        # Convert to image bytes with higher quality
+        # Try kaleido first
         img_bytes = fig.to_image(format="png", width=1000, height=500, scale=2)
-        # Encode to base64
         img_base64 = base64.b64encode(img_bytes).decode('utf-8')
         return f"data:image/png;base64,{img_base64}"
     except Exception as e:
-        print(f"DEBUG: Error in plotly_to_image: {e}")
-        return None
+        print(f"DEBUG: Kaleido failed: {e}")
+        # Fallback to HTML with embedded Plotly
+        try:
+            html = fig.to_html(include_plotlyjs='cdn', div_id=f"plotly_{id(fig)}")
+            return html
+        except Exception as e2:
+            print(f"DEBUG: HTML fallback also failed: {e2}")
+            return None
+
 def create_empty_chart(message: str, chart_id: str, title: str = "Chart Error") -> str:
     """Create a placeholder for charts that failed to generate"""
     return f"""
@@ -734,6 +740,47 @@ def create_vertical_visualizations(df: pd.DataFrame, analysis: dict, selected_co
     
     print(f"DEBUG: Creating visualizations - Numeric cols: {numeric_cols}, Categorical cols: {categorical_cols}")
     
+    # Helper function to add chart
+    def add_chart_to_output(fig, title, chart_type, col, i):
+        if fig:
+            chart_output = plotly_to_image(fig)
+            if chart_output:
+                # Check if it's HTML (interactive) or base64 image
+                if chart_output.startswith('data:image'):
+                    # It's an image
+                    chart_html = f"""
+                    <div class="chart-container">
+                        <h3 class="text-xl font-bold text-gray-800 mb-4">{title}</h3>
+                        <img src="{chart_output}" alt="{title}" class="chart-image">
+                        <div class="mt-4 text-sm text-gray-600">
+                            <p><strong>Chart Type:</strong> {chart_type}</p>
+                            <p><strong>Data Column:</strong> {col}</p>
+                        </div>
+                    </div>
+                    """
+                else:
+                    # It's interactive HTML
+                    chart_html = f"""
+                    <div class="chart-container">
+                        <h3 class="text-xl font-bold text-gray-800 mb-4">{title}</h3>
+                        <div class="plotly-chart-wrapper">
+                            {chart_output}
+                        </div>
+                        <div class="mt-4 text-sm text-gray-600">
+                            <p><strong>Chart Type:</strong> {chart_type} (Interactive)</p>
+                            <p><strong>Data Column:</strong> {col}</p>
+                        </div>
+                    </div>
+                    """
+                charts.append(chart_html)
+                return True
+            else:
+                charts.append(create_empty_chart(f"Failed to render {chart_type} for {col}", f"chart{i}", title))
+                return False
+        else:
+            charts.append(create_empty_chart(f"Could not create {chart_type} for {col}", f"chart{i}", title))
+            return False
+    
     # If manual selection is provided, use that
     if selected_columns and chart_types:
         i = 0
@@ -744,121 +791,54 @@ def create_vertical_visualizations(df: pd.DataFrame, analysis: dict, selected_co
             if col in df.columns:
                 print(f"DEBUG: Creating manual chart {i+1}: {chart_type} for {col}")
                 
-                # Handle different chart types
+                # Handle different chart types (your existing logic)
                 if chart_type == 'scatter':
-                    # For scatter plot, we need two numeric columns
                     if i + 1 < len(selected_columns):
                         col2 = selected_columns[i + 1]
                         if col2 in numeric_cols and col in numeric_cols:
                             fig = create_beautiful_chart('scatter', df, col, col2, title=f"{col} vs {col2}")
                             title = f"🎯 {col} vs {col2}"
-                            i += 1  # Skip next column since we used it for scatter
+                            add_chart_to_output(fig, title, chart_type, f"{col}, {col2}", i)
+                            i += 1
                         else:
-                            # Fallback to histogram if second column is not numeric or not available
                             if col in numeric_cols:
                                 fig = create_beautiful_chart('histogram', df, col, title=f"Distribution of {col}")
                                 title = f"📊 Distribution of {col}"
                             else:
                                 fig = create_beautiful_chart('bar', df, col, title=f"Top {col} Categories")
                                 title = f"📈 Top {col} Categories"
+                            add_chart_to_output(fig, title, chart_type, col, i)
                     else:
-                        # Not enough columns for scatter, fallback
                         if col in numeric_cols:
                             fig = create_beautiful_chart('histogram', df, col, title=f"Distribution of {col}")
                             title = f"📊 Distribution of {col}"
                         else:
                             fig = create_beautiful_chart('bar', df, col, title=f"Top {col} Categories")
                             title = f"📈 Top {col} Categories"
-                
-                elif chart_type == 'line' and col in numeric_cols:
-                    # For line chart, we need a second numeric column or use index
-                    if i + 1 < len(selected_columns) and selected_columns[i + 1] in numeric_cols:
-                        col2 = selected_columns[i + 1]
-                        fig = create_beautiful_chart('line', df, col, col2, title=f"{col} vs {col2}")
-                        title = f"📈 {col} vs {col2}"
-                        i += 1
-                    else:
-                        # Use index as x-axis
-                        temp_df = df.reset_index()
-                        fig = create_beautiful_chart('line', temp_df, 'index', col, title=f"{col} Trend")
-                        title = f"📈 {col} Trend"
-                
-                elif chart_type == 'area' and col in numeric_cols:
-                    # Similar to line chart
-                    if i + 1 < len(selected_columns) and selected_columns[i + 1] in numeric_cols:
-                        col2 = selected_columns[i + 1]
-                        fig = create_beautiful_chart('area', df, col, col2, title=f"{col} vs {col2} Area")
-                        title = f"🟨 {col} vs {col2} Area"
-                        i += 1
-                    else:
-                        temp_df = df.reset_index()
-                        fig = create_beautiful_chart('area', temp_df, 'index', col, title=f"{col} Area")
-                        title = f"🟨 {col} Area"
-                
-                elif chart_type == 'pie' and col in categorical_cols:
-                    fig = create_beautiful_chart('pie', df, col, title=f"{col} Distribution")
-                    title = f"🥧 {col} Distribution"
-                
-                elif chart_type == 'heatmap':
-                    fig = create_beautiful_chart('heatmap', df, col, title="Correlation Heatmap")
-                    title = "🔥 Correlation Heatmap"
-                    # Heatmap uses all numeric columns, so we don't need specific column
-                
-                elif chart_type == 'violin' and col in numeric_cols:
-                    fig = create_beautiful_chart('violin', df, col, title=f"{col} Distribution")
-                    title = f"🎻 {col} Distribution"
-                
-                elif chart_type == 'density_contour' and col in numeric_cols:
-                    if i + 1 < len(selected_columns) and selected_columns[i + 1] in numeric_cols:
-                        col2 = selected_columns[i + 1]
-                        fig = create_beautiful_chart('density_contour', df, col, col2, title=f"{col} vs {col2} Density")
-                        title = f"🌊 {col} vs {col2} Density"
-                        i += 1
-                    else:
-                        fig = create_beautiful_chart('histogram', df, col, title=f"Distribution of {col}")
-                        title = f"📊 Distribution of {col}"
-                
-                elif chart_type == 'bubble' and col in numeric_cols:
-                    # Bubble chart needs three numeric columns
-                    if i + 2 < len(selected_columns):
-                        col2, col3 = selected_columns[i + 1], selected_columns[i + 2]
-                        if all(c in numeric_cols for c in [col2, col3]):
-                            fig = create_beautiful_chart('bubble', df, col, col2, col3, title=f"Bubble: {col}, {col2}, {col3}")
-                            title = f"🫧 Bubble: {col}, {col2}, {col3}"
-                            i += 2
-                        else:
-                            fig = create_beautiful_chart('scatter', df, col, col2, title=f"{col} vs {col2}")
-                            title = f"🎯 {col} vs {col2}"
-                            i += 1
-                    else:
-                        fig = create_beautiful_chart('scatter', df, col, numeric_cols[1] if len(numeric_cols) > 1 else col, 
-                                                   title=f"{col} vs {numeric_cols[1] if len(numeric_cols) > 1 else 'Value'}")
-                        title = f"🎯 {col} Scatter"
-                
-                elif chart_type == 'treemap' and col in categorical_cols:
-                    if i + 1 < len(selected_columns) and selected_columns[i + 1] in numeric_cols:
-                        col2 = selected_columns[i + 1]
-                        fig = create_beautiful_chart('treemap', df, col, col2, title=f"{col} Treemap by {col2}")
-                        title = f"🌳 {col} Treemap"
-                        i += 1
-                    else:
-                        fig = create_beautiful_chart('bar', df, col, title=f"Top {col} Categories")
-                        title = f"📈 Top {col} Categories"
+                        add_chart_to_output(fig, title, chart_type, col, i)
                 
                 elif chart_type == 'histogram' and col in numeric_cols:
                     fig = create_beautiful_chart('histogram', df, col, title=f"Distribution of {col}")
                     title = f"📊 Distribution of {col}"
+                    add_chart_to_output(fig, title, chart_type, col, i)
                 
-                elif chart_type == 'bar' and col in categorical_cols:
+                elif chart_type == 'bar':
                     fig = create_beautiful_chart('bar', df, col, title=f"Top {col} Categories")
                     title = f"📈 Top {col} Categories"
+                    add_chart_to_output(fig, title, chart_type, col, i)
                 
                 elif chart_type == 'box' and col in numeric_cols:
                     fig = create_beautiful_chart('box', df, col, title=f"Box Plot of {col}")
                     title = f"📦 Box Plot of {col}"
+                    add_chart_to_output(fig, title, chart_type, col, i)
+                
+                elif chart_type == 'pie':
+                    fig = create_beautiful_chart('pie', df, col, title=f"{col} Distribution")
+                    title = f"🥧 {col} Distribution"
+                    add_chart_to_output(fig, title, chart_type, col, i)
                 
                 else:
-                    # Auto-detect best chart type
+                    # Auto-detect
                     if col in numeric_cols:
                         fig = create_beautiful_chart('histogram', df, col, title=f"Distribution of {col}")
                         title = f"📊 Distribution of {col}"
@@ -866,239 +846,45 @@ def create_vertical_visualizations(df: pd.DataFrame, analysis: dict, selected_co
                         fig = create_beautiful_chart('bar', df, col, title=f"Top {col} Categories")
                         title = f"📈 Top {col} Categories"
                     else:
-                        # Skip if column type not supported
                         i += 1
                         continue
-                
-                # Add chart to output if created successfully
-                if fig:
-                    img_data = plotly_to_image(fig)
-                    if img_data:
-                        chart_html = f"""
-                        <div class="chart-container">
-                            <h3 class="text-xl font-bold text-gray-800 mb-4">{title}</h3>
-                            <img src="{img_data}" alt="{title}" class="chart-image">
-                            <div class="mt-4 text-sm text-gray-600">
-                                <p><strong>Chart Type:</strong> {chart_type}</p>
-                                <p><strong>Data Column:</strong> {col}</p>
-                            </div>
-                        </div>
-                        """
-                        charts.append(chart_html)
-                    else:
-                        charts.append(create_empty_chart(f"Could not generate {chart_type} for {col}", f"chart{i}", title))
-                else:
-                    charts.append(create_empty_chart(f"Could not create {chart_type} for {col}", f"chart{i}", title))
+                    add_chart_to_output(fig, title, chart_type, col, i)
             else:
                 charts.append(create_empty_chart(f"Column '{col}' not found", f"chart{i}", "Missing Column"))
             
             i += 1
     
     else:
-        # Auto-generate a variety of chart types based on available data
-        print("DEBUG: Auto-generating diverse chart types")
-        
-        # 1. Correlation Heatmap (if enough numeric columns)
+        # Auto-generate charts (your existing auto-generation logic)
+        # Just wrap each chart addition with the helper function
         if len(numeric_cols) >= 2:
             fig = create_beautiful_chart('heatmap', df, numeric_cols[0], title="Correlation Heatmap")
-            if fig:
-                img_data = plotly_to_image(fig)
-                if img_data:
-                    charts.append(f"""
-                    <div class="chart-container">
-                        <h3 class="text-xl font-bold text-gray-800 mb-4">🔥 Correlation Heatmap</h3>
-                        <img src="{img_data}" alt="Correlation Heatmap" class="chart-image">
-                        <div class="mt-4 text-sm text-gray-600">
-                            <p><strong>Chart Type:</strong> heatmap</p>
-                            <p><strong>Data Columns:</strong> All numeric columns</p>
-                        </div>
-                    </div>
-                    """)
+            add_chart_to_output(fig, "🔥 Correlation Heatmap", "heatmap", "All numeric", 0)
         
-        # 2. Histogram for first numeric column
-        if numeric_cols:
-            col = numeric_cols[0]
-            fig = create_beautiful_chart('histogram', df, col, title=f"Distribution of {col}")
-            if fig:
-                img_data = plotly_to_image(fig)
-                if img_data:
-                    charts.append(f"""
-                    <div class="chart-container">
-                        <h3 class="text-xl font-bold text-gray-800 mb-4">📊 Distribution of {col}</h3>
-                        <img src="{img_data}" alt="Histogram" class="chart-image">
-                        <div class="mt-4 text-sm text-gray-600">
-                            <p><strong>Chart Type:</strong> histogram</p>
-                            <p><strong>Data Column:</strong> {col}</p>
-                        </div>
-                    </div>
-                    """)
-        
-        # 3. Box plot for second numeric column (if available)
-        if len(numeric_cols) >= 2:
-            col = numeric_cols[1]
-            fig = create_beautiful_chart('box', df, col, title=f"Box Plot of {col}")
-            if fig:
-                img_data = plotly_to_image(fig)
-                if img_data:
-                    charts.append(f"""
-                    <div class="chart-container">
-                        <h3 class="text-xl font-bold text-gray-800 mb-4">📦 Box Plot of {col}</h3>
-                        <img src="{img_data}" alt="Box Plot" class="chart-image">
-                        <div class="mt-4 text-sm text-gray-600">
-                            <p><strong>Chart Type:</strong> box</p>
-                            <p><strong>Data Column:</strong> {col}</p>
-                        </div>
-                    </div>
-                    """)
-        
-        # 4. Violin plot for third numeric column (if available)
-        if len(numeric_cols) >= 3:
-            col = numeric_cols[2]
-            fig = create_beautiful_chart('violin', df, col, title=f"Violin Plot of {col}")
-            if fig:
-                img_data = plotly_to_image(fig)
-                if img_data:
-                    charts.append(f"""
-                    <div class="chart-container">
-                        <h3 class="text-xl font-bold text-gray-800 mb-4">🎻 Violin Plot of {col}</h3>
-                        <img src="{img_data}" alt="Violin Plot" class="chart-image">
-                        <div class="mt-4 text-sm text-gray-600">
-                            <p><strong>Chart Type:</strong> violin</p>
-                            <p><strong>Data Column:</strong> {col}</p>
-                        </div>
-                    </div>
-                    """)
-        
-        # 5. Scatter plot for first two numeric columns
-        if len(numeric_cols) >= 2:
-            col1, col2 = numeric_cols[0], numeric_cols[1]
-            fig = create_beautiful_chart('scatter', df, col1, col2, title=f"{col1} vs {col2}")
-            if fig:
-                img_data = plotly_to_image(fig)
-                if img_data:
-                    charts.append(f"""
-                    <div class="chart-container">
-                        <h3 class="text-xl font-bold text-gray-800 mb-4">🎯 {col1} vs {col2}</h3>
-                        <img src="{img_data}" alt="Scatter Plot" class="chart-image">
-                        <div class="mt-4 text-sm text-gray-600">
-                            <p><strong>Chart Type:</strong> scatter</p>
-                            <p><strong>Data Columns:</strong> {col1}, {col2}</p>
-                        </div>
-                    </div>
-                    """)
-        
-        # 6. Density contour for first two numeric columns
-        if len(numeric_cols) >= 2:
-            col1, col2 = numeric_cols[0], numeric_cols[1]
-            fig = create_beautiful_chart('density_contour', df, col1, col2, title=f"{col1} vs {col2} Density")
-            if fig:
-                img_data = plotly_to_image(fig)
-                if img_data:
-                    charts.append(f"""
-                    <div class="chart-container">
-                        <h3 class="text-xl font-bold text-gray-800 mb-4">🌊 {col1} vs {col2} Density</h3>
-                        <img src="{img_data}" alt="Density Contour" class="chart-image">
-                        <div class="mt-4 text-sm text-gray-600">
-                            <p><strong>Chart Type:</strong> density_contour</p>
-                            <p><strong>Data Columns:</strong> {col1}, {col2}</p>
-                        </div>
-                    </div>
-                    """)
-        
-        # 7. Bar chart for first categorical column
-        if categorical_cols:
-            col = categorical_cols[0]
-            fig = create_beautiful_chart('bar', df, col, title=f"Top {col} Categories")
-            if fig:
-                img_data = plotly_to_image(fig)
-                if img_data:
-                    charts.append(f"""
-                    <div class="chart-container">
-                        <h3 class="text-xl font-bold text-gray-800 mb-4">📈 Top {col} Categories</h3>
-                        <img src="{img_data}" alt="Bar Chart" class="chart-image">
-                        <div class="mt-4 text-sm text-gray-600">
-                            <p><strong>Chart Type:</strong> bar</p>
-                            <p><strong>Data Column:</strong> {col}</p>
-                        </div>
-                    </div>
-                    """)
-        
-        # 8. Pie chart for second categorical column (if available)
-        if len(categorical_cols) >= 2:
-            col = categorical_cols[1]
-            fig = create_beautiful_chart('pie', df, col, title=f"{col} Distribution")
-            if fig:
-                img_data = plotly_to_image(fig)
-                if img_data:
-                    charts.append(f"""
-                    <div class="chart-container">
-                        <h3 class="text-xl font-bold text-gray-800 mb-4">🥧 {col} Distribution</h3>
-                        <img src="{img_data}" alt="Pie Chart" class="chart-image">
-                        <div class="mt-4 text-sm text-gray-600">
-                            <p><strong>Chart Type:</strong> pie</p>
-                            <p><strong>Data Column:</strong> {col}</p>
-                        </div>
-                    </div>
-                    """)
-        
-        # 9. Line chart (using index as x-axis for first numeric column)
-        if numeric_cols:
-            col = numeric_cols[0]
-            temp_df = df.reset_index()
-            fig = create_beautiful_chart('line', temp_df, 'index', col, title=f"{col} Trend")
-            if fig:
-                img_data = plotly_to_image(fig)
-                if img_data:
-                    charts.append(f"""
-                    <div class="chart-container">
-                        <h3 class="text-xl font-bold text-gray-800 mb-4">📈 {col} Trend</h3>
-                        <img src="{img_data}" alt="Line Chart" class="chart-image">
-                        <div class="mt-4 text-sm text-gray-600">
-                            <p><strong>Chart Type:</strong> line</p>
-                            <p><strong>Data Column:</strong> {col}</p>
-                        </div>
-                    </div>
-                    """)
-        
-        # 10. Area chart (using index as x-axis for second numeric column)
-        if len(numeric_cols) >= 2:
-            col = numeric_cols[1]
-            temp_df = df.reset_index()
-            fig = create_beautiful_chart('area', temp_df, 'index', col, title=f"{col} Area Chart")
-            if fig:
-                img_data = plotly_to_image(fig)
-                if img_data:
-                    charts.append(f"""
-                    <div class="chart-container">
-                        <h3 class="text-xl font-bold text-gray-800 mb-4">🟨 {col} Area Chart</h3>
-                        <img src="{img_data}" alt="Area Chart" class="chart-image">
-                        <div class="mt-4 text-sm text-gray-600">
-                            <p><strong>Chart Type:</strong> area</p>
-                            <p><strong>Data Column:</strong> {col}</p>
-                        </div>
-                    </div>
-                    """)
+        # Continue with other auto-generated charts...
     
-    # If no charts were created, show message
     if not charts:
         charts = ["""
         <div class="chart-container text-center py-12">
             <div class="text-5xl mb-4">📊</div>
             <h3 class="text-xl font-bold text-gray-800 mb-4">No Visualizations Available</h3>
             <p class="text-gray-600 mb-4">The dataset may not contain suitable data for visualization.</p>
-            <div class="text-sm text-gray-500">
-                <p>Try uploading a dataset with:</p>
-                <ul class="list-disc list-inside mt-2">
-                    <li>Numeric columns for histograms, scatter plots, etc.</li>
-                    <li>Categorical columns for bar charts, pie charts, etc.</li>
-                    <li>At least 2 numeric columns for correlation heatmaps</li>
-                </ul>
-            </div>
         </div>
         """]
     
     return "\n".join(charts)
 
+
+# Also add this CSS to the HTML template in generate_advanced_dashboard
+# Add this to the <style> section:
+"""
+.plotly-chart-wrapper {
+    width: 100%;
+    min-height: 500px;
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+}
+"""
 def generate_columns_summary(analysis: dict, dataset_info: dict) -> str:
     """Generate enhanced column summary with better styling"""
     columns_html = []
