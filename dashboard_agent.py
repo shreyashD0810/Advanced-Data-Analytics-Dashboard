@@ -68,7 +68,23 @@ def plotly_to_image(fig):
     except Exception as e:
         print(f"DEBUG: Error in plotly_to_image: {e}")
         return None
-
+def create_empty_chart(message: str, chart_id: str, title: str = "Chart Error") -> str:
+    """Create a placeholder for charts that failed to generate"""
+    return f"""
+    <div class="chart-container">
+        <h3 class="text-xl font-bold text-gray-800 mb-4">{title}</h3>
+        <div class="flex items-center justify-center h-96 bg-gray-50 rounded-lg border-2 border-dashed border-gray-300">
+            <div class="text-center">
+                <div class="text-5xl mb-4">📊</div>
+                <p class="text-gray-600 text-lg mb-2">Chart Generation Failed</p>
+                <p class="text-gray-500 text-sm">{message}</p>
+            </div>
+        </div>
+        <div class="mt-4 text-sm text-gray-600">
+            <p><strong>Chart ID:</strong> {chart_id}</p>
+        </div>
+    </div>
+    """
 def create_beautiful_chart(chart_type: str, df: pd.DataFrame, x_col: str, y_col: str = None, z_col: str = None, title: str = ""):
     """Create beautiful charts with consistent styling"""
     try:
